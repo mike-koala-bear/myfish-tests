@@ -13,7 +13,7 @@ on:
       private_repo:
         description: "owner/name of the private engine repository"
         required: true
-        default: "mike/myfish"
+        default: "mike-koala-bear/myfish"
       engine_a_ref:
         description: "Git ref (branch, tag, or SHA) for Engine A (test build)"
         required: true
@@ -162,22 +162,41 @@ jobs:
             "$HARNESS_ROOT"
 
           cd "$HARNESS_ROOT"
-          git fetch origin "${{ inputs.engine_a_ref }}" || true
-          git checkout -B regression-workspace "${{ inputs.engine_a_ref }}"
+
+          resolve_ref() {
+            local ref="$1"
+            if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1; then
+              git rev-parse "${ref}^{commit}"
+              return 0
+            fi
+            if git fetch origin "${ref}" --depth=1 >/dev/null 2>&1; then
+              git rev-parse FETCH_HEAD
+              return 0
+            fi
+            local full
+            full=$(git ls-remote origin | awk -v r="$ref" '$1 ~ "^"r {print $1; exit}')
+            if [[ -n "$full" ]]; then
+              git fetch origin "${full}" --depth=1 >/dev/null 2>&1
+              git rev-parse FETCH_HEAD
+              return 0
+            fi
+            return 1
+          }
+
+          ENGINE_A_SHA=$(resolve_ref "${{ inputs.engine_a_ref }}") || {
+            echo "::error ::Unable to resolve Engine A ref '${{ inputs.engine_a_ref }}'"
+            exit 1
+          }
+          ENGINE_B_SHA=$(resolve_ref "${{ inputs.engine_b_ref }}") || {
+            echo "::error ::Unable to resolve Engine B ref '${{ inputs.engine_b_ref }}'"
+            exit 1
+          }
+
+          git checkout -B regression-workspace "${ENGINE_A_SHA}"
           git submodule update --init --recursive
 
-          git fetch origin "${{ inputs.engine_b_ref }}" || true
-          if git rev-parse --verify --quiet "${{ inputs.engine_b_ref }}" >/dev/null; then
-            BASELINE_SHA=$(git rev-parse "${{ inputs.engine_b_ref }}")
-          elif git rev-parse --verify --quiet "origin/${{ inputs.engine_b_ref }}" >/dev/null; then
-            BASELINE_SHA=$(git rev-parse "origin/${{ inputs.engine_b_ref }}")
-          else
-            git fetch origin "${{ inputs.engine_b_ref }}"
-            BASELINE_SHA=$(git rev-parse FETCH_HEAD)
-          fi
-          WORKSPACE_SHA=$(git rev-parse HEAD)
-          echo "BASELINE_SHA=${BASELINE_SHA}" >> "$GITHUB_ENV"
-          echo "WORKSPACE_SHA=${WORKSPACE_SHA}" >> "$GITHUB_ENV"
+          echo "WORKSPACE_SHA=${ENGINE_A_SHA}" >> "$GITHUB_ENV"
+          echo "BASELINE_SHA=${ENGINE_B_SHA}" >> "$GITHUB_ENV"
 
       - name: Install Python dependencies
         run: |
@@ -227,7 +246,7 @@ jobs:
           RESULTS_DIR: ${{ env.RESULTS_DIR }}
         run: |
           mkdir -p "$RESULTS_DIR"
-          python tools/regression_client.py fixed \
+          python tools/regression_client.py --json-out "$RESULTS_DIR/summary.json" fixed \
             --games "${MATCH_GAMES}" \
             --concurrency "${MATCH_CONCURRENCY}" \
             --max-moves "${MATCH_MAX_MOVES}" \
@@ -241,8 +260,7 @@ jobs:
             --engineB-name "${ENGINE_B_LABEL}" \
             --engineB-git-ref "${BASELINE_SHA}" \
             --engineB-git-binary "${WORKSPACE_BINARY}" \
-            --engineB-git-rebuild \
-            --json-out "$RESULTS_DIR/summary.json"
+            --engineB-git-rebuild
 
       - name: Run regression (local binary mode)
         id: regression_local
@@ -252,7 +270,7 @@ jobs:
           RESULTS_DIR: ${{ env.RESULTS_DIR }}
         run: |
           mkdir -p "$RESULTS_DIR"
-          python tools/regression_client.py fixed \
+          python tools/regression_client.py --json-out "$RESULTS_DIR/summary.json" fixed \
             --games "${MATCH_GAMES}" \
             --concurrency "${MATCH_CONCURRENCY}" \
             --max-moves "${MATCH_MAX_MOVES}" \
@@ -265,8 +283,7 @@ jobs:
             --engineB "--threads ${ENGINE_THREADS}" \
             --engineB-name "${ENGINE_B_LABEL}" \
             --engineB-workspace \
-            --engineB-workspace-binary "${ENGINE_B_BIN}" \
-            --json-out "$RESULTS_DIR/summary.json"
+            --engineB-workspace-binary "${ENGINE_B_BIN}"
 
       - name: Show summary
         if: always()
