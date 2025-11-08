@@ -84,65 +84,65 @@ jobs:
           ENGINE_LABELS_RAW: ${{ inputs.labels }}
         run: |
           python - <<'PY'
-import os
+            import os
 
-def parse_pairs(text):
-    data = {}
-    for part in text.split(','):
-        part = part.strip()
-        if not part:
-            continue
-        if '=' not in part:
-            raise SystemExit(f"Invalid key=value pair: {part}")
-        key, value = part.split('=', 1)
-        data[key.strip()] = value.strip()
-    return data
+            def parse_pairs(text):
+                data = {}
+                for part in text.split(','):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    if '=' not in part:
+                        raise SystemExit(f"Invalid key=value pair: {part}")
+                    key, value = part.split('=', 1)
+                    data[key.strip()] = value.strip()
+                return data
 
-match_opts = parse_pairs(os.environ.get('MATCH_OPTIONS_RAW', ''))
-paths = parse_pairs(os.environ.get('ENGINE_PATHS_RAW', ''))
-labels = parse_pairs(os.environ.get('ENGINE_LABELS_RAW', ''))
+            match_opts = parse_pairs(os.environ.get('MATCH_OPTIONS_RAW', ''))
+            paths = parse_pairs(os.environ.get('ENGINE_PATHS_RAW', ''))
+            labels = parse_pairs(os.environ.get('ENGINE_LABELS_RAW', ''))
 
-def as_int(data, key, default):
-    try:
-        return int(data.get(key, default))
-    except ValueError:
-        raise SystemExit(f"{key} must be an integer")
+            def as_int(data, key, default):
+                try:
+                    return int(data.get(key, default))
+                except ValueError:
+                    raise SystemExit(f"{key} must be an integer")
 
-games = as_int(match_opts, 'games', 1000)
-concurrency = as_int(match_opts, 'concurrency', 16)
-max_moves = as_int(match_opts, 'max_moves', 512)
+            games = as_int(match_opts, 'games', 1000)
+            concurrency = as_int(match_opts, 'concurrency', 16)
+            max_moves = as_int(match_opts, 'max_moves', 512)
 
-workspace_binary = paths.get('workspace_binary', 'build/myfish')
-local_engine_a = paths.get('local_engine_a', 'engines/engine-a')
-local_engine_b = paths.get('local_engine_b', 'engines/engine-b')
+            workspace_binary = paths.get('workspace_binary', 'build/myfish')
+            local_engine_a = paths.get('local_engine_a', 'engines/engine-a')
+            local_engine_b = paths.get('local_engine_b', 'engines/engine-b')
 
-engine_a_label = labels.get('engine_a', 'workspace')
-engine_b_label = labels.get('engine_b', 'baseline')
+            engine_a_label = labels.get('engine_a', 'workspace')
+            engine_b_label = labels.get('engine_b', 'baseline')
 
-time_raw = os.environ.get('TIME_CONTROL_RAW', '0.8+0.08').strip() or '0.8+0.08'
-if '+' in time_raw:
-    base_str, inc_str = time_raw.split('+', 1)
-else:
-    base_str, inc_str = time_raw, '0'
-try:
-    time_base = float(base_str)
-    time_increment = float(inc_str)
-except ValueError:
-    raise SystemExit('time_control must be formatted as number or number+increment')
+            time_raw = os.environ.get('TIME_CONTROL_RAW', '0.8+0.08').strip() or '0.8+0.08'
+            if '+' in time_raw:
+                base_str, inc_str = time_raw.split('+', 1)
+            else:
+                base_str, inc_str = time_raw, '0'
+            try:
+                time_base = float(base_str)
+                time_increment = float(inc_str)
+            except ValueError:
+                raise SystemExit('time_control must be formatted as number or number+increment')
 
-env_path = os.environ['GITHUB_ENV']
-with open(env_path, 'a', encoding='utf-8') as fh:
-    fh.write(f"MATCH_GAMES={games}\n")
-    fh.write(f"MATCH_CONCURRENCY={concurrency}\n")
-    fh.write(f"MATCH_MAX_MOVES={max_moves}\n")
-    fh.write(f"TIME_PER_MOVE={time_base}\n")
-    fh.write(f"TIME_INCREMENT={time_increment}\n")
-    fh.write(f"WORKSPACE_BINARY={workspace_binary}\n")
-    fh.write(f"LOCAL_ENGINE_A_BIN={local_engine_a}\n")
-    fh.write(f"LOCAL_ENGINE_B_BIN={local_engine_b}\n")
-    fh.write(f"ENGINE_A_LABEL={engine_a_label}\n")
-    fh.write(f"ENGINE_B_LABEL={engine_b_label}\n")
-PY
+            env_path = os.environ['GITHUB_ENV']
+            with open(env_path, 'a', encoding='utf-8') as fh:
+                fh.write(f"MATCH_GAMES={games}\n")
+                fh.write(f"MATCH_CONCURRENCY={concurrency}\n")
+                fh.write(f"MATCH_MAX_MOVES={max_moves}\n")
+                fh.write(f"TIME_PER_MOVE={time_base}\n")
+                fh.write(f"TIME_INCREMENT={time_increment}\n")
+                fh.write(f"WORKSPACE_BINARY={workspace_binary}\n")
+                fh.write(f"LOCAL_ENGINE_A_BIN={local_engine_a}\n")
+                fh.write(f"LOCAL_ENGINE_B_BIN={local_engine_b}\n")
+                fh.write(f"ENGINE_A_LABEL={engine_a_label}\n")
+                fh.write(f"ENGINE_B_LABEL={engine_b_label}\n")
+          PY
           echo "ENGINE_THREADS=${{ inputs.engine_threads }}" >> "$GITHUB_ENV"
 
       - name: Clone private engine repository
