@@ -146,7 +146,7 @@ jobs:
           echo "ENGINE_THREADS=${{ inputs.engine_threads }}" >> "$GITHUB_ENV"
 
       - name: Clone private engine repository
-        if: inputs.use_private_repo == 'true'
+        if: ${{ inputs.use_private_repo }}
         env:
           PAT: ${{ secrets.MYFISH_PAT }}
         run: |
@@ -189,7 +189,7 @@ jobs:
           fi
 
       - name: Configure & build Engine A (workspace)
-        if: inputs.use_private_repo == 'true'
+        if: ${{ inputs.use_private_repo }}
         working-directory: ${{ env.HARNESS_ROOT }}
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -203,7 +203,7 @@ jobs:
           echo "ENGINE_A_BIN=$ENGINE_A_BIN" >> "$GITHUB_ENV"
 
       - name: Use provided engine binaries
-        if: inputs.use_private_repo != 'true'
+        if: ${{ !inputs.use_private_repo }}
         run: |
           ENGINE_A_BIN="${GITHUB_WORKSPACE}/${LOCAL_ENGINE_A_BIN}"
           ENGINE_B_BIN="${GITHUB_WORKSPACE}/${LOCAL_ENGINE_B_BIN}"
@@ -221,7 +221,7 @@ jobs:
 
       - name: Run regression (private repo mode)
         id: regression_private
-        if: inputs.use_private_repo == 'true'
+        if: ${{ inputs.use_private_repo }}
         working-directory: ${{ env.HARNESS_ROOT }}
         env:
           RESULTS_DIR: ${{ env.RESULTS_DIR }}
@@ -246,7 +246,7 @@ jobs:
 
       - name: Run regression (local binary mode)
         id: regression_local
-        if: inputs.use_private_repo != 'true'
+        if: ${{ !inputs.use_private_repo }}
         working-directory: ${{ env.HARNESS_ROOT }}
         env:
           RESULTS_DIR: ${{ env.RESULTS_DIR }}
