@@ -1,0 +1,94 @@
+name: Engine Regression
+run-name: >
+  Engine Regression${{ inputs.job_id && format(' (job {0})', inputs.job_id) || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      comparison_ref:
+        description: "Git ref/hash for Engine B baseline"
+        required: true
+        default: "main"
+      games:
+        description: "Number of games to play"
+        required: true
+        default: "20"
+      concurrency:
+        description: "Concurrent games"
+        required: true
+        default: "2"
+      time_per_move:
+        description: "Base time per move (seconds)"
+        required: true
+        default: "0.2"
+      increment:
+        description: "Increment per move (seconds)"
+        required: true
+        default: "0.0"
+      engine_threads:
+        description: "Threads option to pass to engines"
+        required: true
+        default: "1"
+      workspace_binary:
+        description: "Path to workspace binary for Engine A"
+        required: true
+        default: "./build/myfish"
+      job_id:
+        description: "External job identifier (optional)"
+        required: false
+        default: ""
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    env:
+      EXTERNAL_JOB_ID: ${{ inputs.job_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.MYFISH_PAT || github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build C++ engine (workspace)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Run regression test
+        env:
+          GIT_DISCOVERY_ACROSS_FILESYSTEM: 1
+        run: |
+          mkdir -p testing_platform/results/gha
+          python tools/regression_client.py fixed \
+            --games "${{ inputs.games }}" \
+            --time "${{ inputs.time_per_move }}" \
+            --increment "${{ inputs.increment }}" \
+            --concurrency "${{ inputs.concurrency }}" \
+            --engineA "--threads ${{ inputs.engine_threads }}" \
+            --engineA-workspace \
+            --engineA-workspace-binary "${{ inputs.workspace_binary }}" \
+            --engineB "--threads ${{ inputs.engine_threads }}" \
+            --engineB-git-ref "${{ inputs.comparison_ref }}" \
+            --json-out testing_platform/results/gha/summary.json
+
+      - name: Show summary
+        if: always()
+        run: cat testing_platform/results/gha/summary.json
+
+      - name: Upload summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-results
+          path: testing_platform/results/gha
