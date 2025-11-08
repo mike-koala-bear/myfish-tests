@@ -22,50 +22,26 @@ on:
         description: "Git ref for Engine B baseline"
         required: true
         default: "main"
-      engine_a_label:
-        description: "Display name for Engine A"
+      match_options:
+        description: "Comma-separated key=value pairs for games, concurrency, max_moves"
         required: true
-        default: "workspace"
-      engine_b_label:
-        description: "Display name for Engine B"
+        default: "games=1000,concurrency=16,max_moves=512"
+      time_control:
+        description: "Time control as base+increment seconds (e.g. 0.8+0.08)"
         required: true
-        default: "baseline"
-      engine_a_binary_path:
-        description: "Path to Engine A binary when not cloning (relative to repo root)"
-        required: false
-        default: "engines/engine-a"
-      engine_b_binary_path:
-        description: "Path to Engine B binary when not cloning (relative to repo root)"
-        required: false
-        default: "engines/engine-b"
-      workspace_binary:
-        description: "Relative path to the compiled binary inside each checkout"
-        required: true
-        default: "build/myfish"
-      games:
-        description: "Number of games to run"
-        required: true
-        default: "1000"
-      concurrency:
-        description: "Concurrent games (threads for cutechess)"
-        required: true
-        default: "16"
-      time_per_move:
-        description: "Base time per move (seconds)"
-        required: true
-        default: "0.8"
-      increment:
-        description: "Increment per move (seconds)"
-        required: true
-        default: "0.08"
+        default: "0.8+0.08"
       engine_threads:
         description: "Threads option passed to both engines"
         required: true
         default: "1"
-      max_moves:
-        description: "Maximum moves per game"
+      engine_paths:
+        description: "Comma-separated paths (workspace_binary,local_engine_a,local_engine_b)"
         required: true
-        default: "512"
+        default: "workspace_binary=build/myfish,local_engine_a=engines/engine-a,local_engine_b=engines/engine-b"
+      labels:
+        description: "Comma-separated labels for engines (engine_a,engine_b)"
+        required: true
+        default: "engine_a=workspace,engine_b=baseline"
       job_id:
         description: "Optional external job identifier"
         required: false
@@ -99,6 +75,75 @@ jobs:
             echo "HARNESS_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
           fi
           echo "RESULTS_DIR=${{ github.workspace }}/regression-results" >> "$GITHUB_ENV"
+
+      - name: Parse workflow inputs
+        env:
+          MATCH_OPTIONS_RAW: ${{ inputs.match_options }}
+          TIME_CONTROL_RAW: ${{ inputs.time_control }}
+          ENGINE_PATHS_RAW: ${{ inputs.engine_paths }}
+          ENGINE_LABELS_RAW: ${{ inputs.labels }}
+        run: |
+          python - <<'PY'
+import os
+
+def parse_pairs(text):
+    data = {}
+    for part in text.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '=' not in part:
+            raise SystemExit(f"Invalid key=value pair: {part}")
+        key, value = part.split('=', 1)
+        data[key.strip()] = value.strip()
+    return data
+
+match_opts = parse_pairs(os.environ.get('MATCH_OPTIONS_RAW', ''))
+paths = parse_pairs(os.environ.get('ENGINE_PATHS_RAW', ''))
+labels = parse_pairs(os.environ.get('ENGINE_LABELS_RAW', ''))
+
+def as_int(data, key, default):
+    try:
+        return int(data.get(key, default))
+    except ValueError:
+        raise SystemExit(f"{key} must be an integer")
+
+games = as_int(match_opts, 'games', 1000)
+concurrency = as_int(match_opts, 'concurrency', 16)
+max_moves = as_int(match_opts, 'max_moves', 512)
+
+workspace_binary = paths.get('workspace_binary', 'build/myfish')
+local_engine_a = paths.get('local_engine_a', 'engines/engine-a')
+local_engine_b = paths.get('local_engine_b', 'engines/engine-b')
+
+engine_a_label = labels.get('engine_a', 'workspace')
+engine_b_label = labels.get('engine_b', 'baseline')
+
+time_raw = os.environ.get('TIME_CONTROL_RAW', '0.8+0.08').strip() or '0.8+0.08'
+if '+' in time_raw:
+    base_str, inc_str = time_raw.split('+', 1)
+else:
+    base_str, inc_str = time_raw, '0'
+try:
+    time_base = float(base_str)
+    time_increment = float(inc_str)
+except ValueError:
+    raise SystemExit('time_control must be formatted as number or number+increment')
+
+env_path = os.environ['GITHUB_ENV']
+with open(env_path, 'a', encoding='utf-8') as fh:
+    fh.write(f"MATCH_GAMES={games}\n")
+    fh.write(f"MATCH_CONCURRENCY={concurrency}\n")
+    fh.write(f"MATCH_MAX_MOVES={max_moves}\n")
+    fh.write(f"TIME_PER_MOVE={time_base}\n")
+    fh.write(f"TIME_INCREMENT={time_increment}\n")
+    fh.write(f"WORKSPACE_BINARY={workspace_binary}\n")
+    fh.write(f"LOCAL_ENGINE_A_BIN={local_engine_a}\n")
+    fh.write(f"LOCAL_ENGINE_B_BIN={local_engine_b}\n")
+    fh.write(f"ENGINE_A_LABEL={engine_a_label}\n")
+    fh.write(f"ENGINE_B_LABEL={engine_b_label}\n")
+PY
+          echo "ENGINE_THREADS=${{ inputs.engine_threads }}" >> "$GITHUB_ENV"
 
       - name: Clone private engine repository
         if: inputs.use_private_repo == 'true'
@@ -149,7 +194,7 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j"$(nproc)"
-          ENGINE_A_BIN="${{ env.HARNESS_ROOT }}/${{ inputs.workspace_binary }}"
+          ENGINE_A_BIN="${HARNESS_ROOT}/${WORKSPACE_BINARY}"
           if [[ ! -f "$ENGINE_A_BIN" ]]; then
             echo "::error ::Engine A binary not found at $ENGINE_A_BIN"
             exit 1
@@ -160,8 +205,8 @@ jobs:
       - name: Use provided engine binaries
         if: inputs.use_private_repo != 'true'
         run: |
-          ENGINE_A_BIN="${{ github.workspace }}/${{ inputs.engine_a_binary_path }}"
-          ENGINE_B_BIN="${{ github.workspace }}/${{ inputs.engine_b_binary_path }}"
+          ENGINE_A_BIN="${GITHUB_WORKSPACE}/${LOCAL_ENGINE_A_BIN}"
+          ENGINE_B_BIN="${GITHUB_WORKSPACE}/${LOCAL_ENGINE_B_BIN}"
           if [[ ! -f "$ENGINE_A_BIN" ]]; then
             echo "::error ::Engine A binary missing at $ENGINE_A_BIN"
             exit 1
@@ -183,19 +228,19 @@ jobs:
         run: |
           mkdir -p "$RESULTS_DIR"
           python tools/regression_client.py fixed \
-            --games "${{ inputs.games }}" \
-            --concurrency "${{ inputs.concurrency }}" \
-            --max-moves "${{ inputs.max_moves }}" \
-            --time "${{ inputs.time_per_move }}" \
-            --increment "${{ inputs.increment }}" \
-            --engineA "--threads ${{ inputs.engine_threads }}" \
-            --engineA-name "${{ inputs.engine_a_label }}" \
+            --games "${MATCH_GAMES}" \
+            --concurrency "${MATCH_CONCURRENCY}" \
+            --max-moves "${MATCH_MAX_MOVES}" \
+            --time "${TIME_PER_MOVE}" \
+            --increment "${TIME_INCREMENT}" \
+            --engineA "--threads ${ENGINE_THREADS}" \
+            --engineA-name "${ENGINE_A_LABEL}" \
             --engineA-workspace \
             --engineA-workspace-binary "${ENGINE_A_BIN}" \
-            --engineB "--threads ${{ inputs.engine_threads }}" \
-            --engineB-name "${{ inputs.engine_b_label }}" \
+            --engineB "--threads ${ENGINE_THREADS}" \
+            --engineB-name "${ENGINE_B_LABEL}" \
             --engineB-git-ref "${BASELINE_SHA}" \
-            --engineB-git-binary "${{ inputs.workspace_binary }}" \
+            --engineB-git-binary "${WORKSPACE_BINARY}" \
             --engineB-git-rebuild \
             --json-out "$RESULTS_DIR/summary.json"
 
@@ -208,17 +253,17 @@ jobs:
         run: |
           mkdir -p "$RESULTS_DIR"
           python tools/regression_client.py fixed \
-            --games "${{ inputs.games }}" \
-            --concurrency "${{ inputs.concurrency }}" \
-            --max-moves "${{ inputs.max_moves }}" \
-            --time "${{ inputs.time_per_move }}" \
-            --increment "${{ inputs.increment }}" \
-            --engineA "--threads ${{ inputs.engine_threads }}" \
-            --engineA-name "${{ inputs.engine_a_label }}" \
+            --games "${MATCH_GAMES}" \
+            --concurrency "${MATCH_CONCURRENCY}" \
+            --max-moves "${MATCH_MAX_MOVES}" \
+            --time "${TIME_PER_MOVE}" \
+            --increment "${TIME_INCREMENT}" \
+            --engineA "--threads ${ENGINE_THREADS}" \
+            --engineA-name "${ENGINE_A_LABEL}" \
             --engineA-workspace \
             --engineA-workspace-binary "${ENGINE_A_BIN}" \
-            --engineB "--threads ${{ inputs.engine_threads }}" \
-            --engineB-name "${{ inputs.engine_b_label }}" \
+            --engineB "--threads ${ENGINE_THREADS}" \
+            --engineB-name "${ENGINE_B_LABEL}" \
             --engineB-workspace \
             --engineB-workspace-binary "${ENGINE_B_BIN}" \
             --json-out "$RESULTS_DIR/summary.json"
