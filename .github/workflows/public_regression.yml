@@ -1,0 +1,241 @@
+name: External Engine Regression
+run-name: >
+  External Engine Regression${{ inputs.job_id && format(' (job {0})', inputs.job_id) || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_private_repo:
+        description: "Clone the private engine repo with a PAT (otherwise use local binaries)"
+        type: boolean
+        required: true
+        default: true
+      private_repo:
+        description: "owner/name of the private engine repository"
+        required: true
+        default: "mike/myfish"
+      engine_a_ref:
+        description: "Git ref (branch, tag, or SHA) for Engine A (test build)"
+        required: true
+        default: "main"
+      engine_b_ref:
+        description: "Git ref for Engine B baseline"
+        required: true
+        default: "main"
+      engine_a_label:
+        description: "Display name for Engine A"
+        required: true
+        default: "workspace"
+      engine_b_label:
+        description: "Display name for Engine B"
+        required: true
+        default: "baseline"
+      engine_a_binary_path:
+        description: "Path to Engine A binary when not cloning (relative to repo root)"
+        required: false
+        default: "engines/engine-a"
+      engine_b_binary_path:
+        description: "Path to Engine B binary when not cloning (relative to repo root)"
+        required: false
+        default: "engines/engine-b"
+      workspace_binary:
+        description: "Relative path to the compiled binary inside each checkout"
+        required: true
+        default: "build/myfish"
+      games:
+        description: "Number of games to run"
+        required: true
+        default: "1000"
+      concurrency:
+        description: "Concurrent games (threads for cutechess)"
+        required: true
+        default: "16"
+      time_per_move:
+        description: "Base time per move (seconds)"
+        required: true
+        default: "0.8"
+      increment:
+        description: "Increment per move (seconds)"
+        required: true
+        default: "0.08"
+      engine_threads:
+        description: "Threads option passed to both engines"
+        required: true
+        default: "1"
+      max_moves:
+        description: "Maximum moves per game"
+        required: true
+        default: "512"
+      job_id:
+        description: "Optional external job identifier"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    env:
+      RESULTS_DIR: ${{ github.workspace }}/regression-results
+    steps:
+      - name: Checkout harness repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Determine harness root
+        run: |
+          if [[ "${{ inputs.use_private_repo }}" == "true" ]]; then
+            echo "HARNESS_ROOT=${{ github.workspace }}/engine-src" >> "$GITHUB_ENV"
+          else
+            echo "HARNESS_ROOT=${{ github.workspace }}" >> "$GITHUB_ENV"
+          fi
+          echo "RESULTS_DIR=${{ github.workspace }}/regression-results" >> "$GITHUB_ENV"
+
+      - name: Clone private engine repository
+        if: inputs.use_private_repo == 'true'
+        env:
+          PAT: ${{ secrets.MYFISH_PAT }}
+        run: |
+          if [[ -z "${PAT}" ]]; then
+            echo "::error ::Missing MYFISH_PAT secret with repo access"
+            exit 1
+          fi
+
+          rm -rf "$HARNESS_ROOT"
+          git config --global --add safe.directory "$HARNESS_ROOT" || true
+          git clone --filter=blob:none --no-tags \
+            "https://x-access-token:${PAT}@github.com/${{ inputs.private_repo }}.git" \
+            "$HARNESS_ROOT"
+
+          cd "$HARNESS_ROOT"
+          git fetch origin "${{ inputs.engine_a_ref }}" || true
+          git checkout -B regression-workspace "${{ inputs.engine_a_ref }}"
+          git submodule update --init --recursive
+
+          git fetch origin "${{ inputs.engine_b_ref }}" || true
+          if git rev-parse --verify --quiet "${{ inputs.engine_b_ref }}" >/dev/null; then
+            BASELINE_SHA=$(git rev-parse "${{ inputs.engine_b_ref }}")
+          elif git rev-parse --verify --quiet "origin/${{ inputs.engine_b_ref }}" >/dev/null; then
+            BASELINE_SHA=$(git rev-parse "origin/${{ inputs.engine_b_ref }}")
+          else
+            git fetch origin "${{ inputs.engine_b_ref }}"
+            BASELINE_SHA=$(git rev-parse FETCH_HEAD)
+          fi
+          WORKSPACE_SHA=$(git rev-parse HEAD)
+          echo "BASELINE_SHA=${BASELINE_SHA}" >> "$GITHUB_ENV"
+          echo "WORKSPACE_SHA=${WORKSPACE_SHA}" >> "$GITHUB_ENV"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [[ -f "$HARNESS_ROOT/requirements.txt" ]]; then
+            pip install -r "$HARNESS_ROOT/requirements.txt"
+          else
+            pip install python-chess
+          fi
+
+      - name: Configure & build Engine A (workspace)
+        if: inputs.use_private_repo == 'true'
+        working-directory: ${{ env.HARNESS_ROOT }}
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+          ENGINE_A_BIN="${{ env.HARNESS_ROOT }}/${{ inputs.workspace_binary }}"
+          if [[ ! -f "$ENGINE_A_BIN" ]]; then
+            echo "::error ::Engine A binary not found at $ENGINE_A_BIN"
+            exit 1
+          fi
+          chmod +x "$ENGINE_A_BIN"
+          echo "ENGINE_A_BIN=$ENGINE_A_BIN" >> "$GITHUB_ENV"
+
+      - name: Use provided engine binaries
+        if: inputs.use_private_repo != 'true'
+        run: |
+          ENGINE_A_BIN="${{ github.workspace }}/${{ inputs.engine_a_binary_path }}"
+          ENGINE_B_BIN="${{ github.workspace }}/${{ inputs.engine_b_binary_path }}"
+          if [[ ! -f "$ENGINE_A_BIN" ]]; then
+            echo "::error ::Engine A binary missing at $ENGINE_A_BIN"
+            exit 1
+          fi
+          if [[ ! -f "$ENGINE_B_BIN" ]]; then
+            echo "::error ::Engine B binary missing at $ENGINE_B_BIN"
+            exit 1
+          fi
+          chmod +x "$ENGINE_A_BIN" "$ENGINE_B_BIN"
+          echo "ENGINE_A_BIN=$ENGINE_A_BIN" >> "$GITHUB_ENV"
+          echo "ENGINE_B_BIN=$ENGINE_B_BIN" >> "$GITHUB_ENV"
+
+      - name: Run regression (private repo mode)
+        id: regression_private
+        if: inputs.use_private_repo == 'true'
+        working-directory: ${{ env.HARNESS_ROOT }}
+        env:
+          RESULTS_DIR: ${{ env.RESULTS_DIR }}
+        run: |
+          mkdir -p "$RESULTS_DIR"
+          python tools/regression_client.py fixed \
+            --games "${{ inputs.games }}" \
+            --concurrency "${{ inputs.concurrency }}" \
+            --max-moves "${{ inputs.max_moves }}" \
+            --time "${{ inputs.time_per_move }}" \
+            --increment "${{ inputs.increment }}" \
+            --engineA "--threads ${{ inputs.engine_threads }}" \
+            --engineA-name "${{ inputs.engine_a_label }}" \
+            --engineA-workspace \
+            --engineA-workspace-binary "${ENGINE_A_BIN}" \
+            --engineB "--threads ${{ inputs.engine_threads }}" \
+            --engineB-name "${{ inputs.engine_b_label }}" \
+            --engineB-git-ref "${BASELINE_SHA}" \
+            --engineB-git-binary "${{ inputs.workspace_binary }}" \
+            --engineB-git-rebuild \
+            --json-out "$RESULTS_DIR/summary.json"
+
+      - name: Run regression (local binary mode)
+        id: regression_local
+        if: inputs.use_private_repo != 'true'
+        working-directory: ${{ env.HARNESS_ROOT }}
+        env:
+          RESULTS_DIR: ${{ env.RESULTS_DIR }}
+        run: |
+          mkdir -p "$RESULTS_DIR"
+          python tools/regression_client.py fixed \
+            --games "${{ inputs.games }}" \
+            --concurrency "${{ inputs.concurrency }}" \
+            --max-moves "${{ inputs.max_moves }}" \
+            --time "${{ inputs.time_per_move }}" \
+            --increment "${{ inputs.increment }}" \
+            --engineA "--threads ${{ inputs.engine_threads }}" \
+            --engineA-name "${{ inputs.engine_a_label }}" \
+            --engineA-workspace \
+            --engineA-workspace-binary "${ENGINE_A_BIN}" \
+            --engineB "--threads ${{ inputs.engine_threads }}" \
+            --engineB-name "${{ inputs.engine_b_label }}" \
+            --engineB-workspace \
+            --engineB-workspace-binary "${ENGINE_B_BIN}" \
+            --json-out "$RESULTS_DIR/summary.json"
+
+      - name: Show summary
+        if: always()
+        run: |
+          if [[ -f "${RESULTS_DIR}/summary.json" ]]; then
+            cat "${RESULTS_DIR}/summary.json"
+          else
+            echo "summary.json not produced"
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-results-${{ inputs.job_id || github.run_id }}
+          path: ${{ env.RESULTS_DIR }}
+          if-no-files-found: error
